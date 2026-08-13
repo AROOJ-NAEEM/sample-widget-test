@@ -3,50 +3,117 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Crypto Heatmap</title>
+<title>Crypto Widgets</title>
 <style>
+  * { box-sizing: border-box; }
   html, body {
     margin: 0;
     padding: 0;
     height: 100%;
     width: 100%;
-    background: #000000;
+    background: #0e0e0e;
     font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
+    overflow: hidden;
   }
-  #status {
+  #tabs {
+    display: flex;
+    background: #1a1a1a;
+  }
+  #tabs button {
+    flex: 1;
+    padding: 10px 4px;
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+  }
+  #tabs button.active {
+    color: #fff;
+    border-bottom-color: #2962FF;
+  }
+  #panes {
+    position: relative;
+    height: calc(100% - 38px);
+    width: 100%;
+  }
+  .pane {
+    position: absolute;
+    inset: 0;
+    display: none;
+  }
+  .pane.active { display: block; }
+
+  /* ---- Heatmap ---- */
+  #heatmap-status {
     color: #999;
     text-align: center;
     padding: 16px;
     font-size: 13px;
   }
-  #grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 4px;
-    padding: 4px;
+  #treemap {
+    position: relative;
+    width: 100%;
+    height: 100%;
   }
   .tile {
-    border-radius: 6px;
-    padding: 8px 4px;
-    min-height: 44px;
+    position: absolute;
+    border: 1px solid #0e0e0e;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #ffffff;
+    color: #fff;
+    overflow: hidden;
+    text-align: center;
   }
-  .symbol {
-    font-size: 13px;
-    font-weight: 700;
+  .tile img {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    margin-bottom: 2px;
   }
-  .change {
+  .tile .sym { font-size: 11px; font-weight: 700; line-height: 1.2; }
+  .tile .chg { font-size: 10px; font-weight: 500; opacity: 0.9; line-height: 1.2; }
+
+  /* ---- Chart ---- */
+  #chart-controls {
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    background: #161616;
+  }
+  #chart-controls button {
+    flex: 1;
+    padding: 5px 0;
     font-size: 11px;
-    font-weight: 500;
-    opacity: 0.9;
+    background: #262626;
+    color: #ccc;
+    border: none;
+    border-radius: 4px;
+  }
+  #chart-controls button.active {
+    background: #2962FF;
+    color: #fff;
+  }
+  #chart-container {
+    width: 100%;
+    height: calc(100% - 36px);
+  }
+  #chart-status {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    transform: translateY(-50%);
+    text-align: center;
+    color: #999;
+    font-size: 13px;
   }
   .retry {
     display: block;
-    margin: 12px auto;
+    margin: 12px auto 0;
     padding: 6px 14px;
     border-radius: 6px;
     border: none;
@@ -58,83 +125,270 @@
 </head>
 <body>
 
-<div id="status">Loading…</div>
-<div id="grid"></div>
+<div id="tabs">
+  <button id="tab-heatmap" class="active">Heatmap</button>
+  <button id="tab-chart">Chart</button>
+</div>
 
+<div id="panes">
+  <div id="pane-heatmap" class="pane active">
+    <div id="heatmap-status">Loading…</div>
+    <div id="treemap"></div>
+  </div>
+
+  <div id="pane-chart" class="pane">
+    <div id="chart-controls">
+      <button data-interval="1h" data-limit="72">1H</button>
+      <button data-interval="4h" data-limit="90" class="active">4H</button>
+      <button data-interval="1d" data-limit="120">1D</button>
+    </div>
+    <div id="chart-container"></div>
+    <div id="chart-status">Loading…</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-  // Renders a live crypto heatmap directly on this page, using CoinGecko's free
-  // public API — no TradingView embed script, no iframe. TradingView's widget
-  // requires navigating a cross-origin iframe (s3.tradingview.com -> tradingview-widget.com),
-  // which ASWebAuthenticationSession blocks by design (confirmed via Web Inspector:
-  // the iframe navigation resolves to about:blank). This avoids that entirely by
-  // doing a same-frame fetch() and rendering with plain HTML/CSS.
+  // ============================================================
+  // Same-page fetch + render, no TradingView embed script, no
+  // iframe anywhere. ASWebAuthenticationSession blocks cross-origin
+  // iframe navigation (confirmed via Web Inspector) — everything
+  // here is a plain same-frame fetch()/script tag, which is allowed.
+  // ============================================================
 
-  const ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&price_change_percentage=24h";
+  // ---------- Tabs ----------
+  const tabHeatmap = document.getElementById("tab-heatmap");
+  const tabChart = document.getElementById("tab-chart");
+  const paneHeatmap = document.getElementById("pane-heatmap");
+  const paneChart = document.getElementById("pane-chart");
+  let chartInitialized = false;
 
-  function colorFor(change) {
-    if (change === null || change === undefined) return "rgba(150,150,150,0.35)";
-    if (change < -8)  return "#8c1414";
-    if (change < -3)  return "#d94040";
-    if (change < 0)   return "#e68c8c";
-    if (change < 3)   return "#595959";
-    if (change < 8)   return "#73bf73";
-    if (change < 13)  return "#338c33";
-    return "#0d590d";
+  tabHeatmap.onclick = () => switchTab("heatmap");
+  tabChart.onclick = () => switchTab("chart");
+
+  function switchTab(name) {
+    const heat = name === "heatmap";
+    tabHeatmap.classList.toggle("active", heat);
+    tabChart.classList.toggle("active", !heat);
+    paneHeatmap.classList.toggle("active", heat);
+    paneChart.classList.toggle("active", !heat);
+    if (!heat && !chartInitialized) {
+      initChart();
+    } else if (!heat) {
+      resizeChart();
+    }
   }
 
-  function render(coins) {
-    const statusEl = document.getElementById("status");
-    const gridEl = document.getElementById("grid");
-    statusEl.style.display = "none";
-    gridEl.innerHTML = "";
+  // ---------- Heatmap (squarified treemap, sized by market cap) ----------
+  const HEATMAP_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=16&page=1&price_change_percentage=24h";
 
-    coins.forEach(coin => {
+  function colorFor(change) {
+    if (change === null || change === undefined) return "#595959";
+    if (change < -8)  return "#7f1414";
+    if (change < -3)  return "#c23636";
+    if (change < 0)   return "#d97a7a";
+    if (change < 3)   return "#595959";
+    if (change < 8)   return "#4fa64f";
+    if (change < 13)  return "#2e7d2e";
+    return "#0d4d0d";
+  }
+
+  // Classic squarified treemap.
+  function squarify(items, x, y, w, h, out) {
+    if (items.length === 0) return;
+    if (items.length === 1) {
+      out.push({ item: items[0].item, x, y, w, h });
+      return;
+    }
+    const total = items.reduce((s, d) => s + d.value, 0);
+    const scale = (w * h) / total;
+    const scaled = items.map(d => ({ item: d.item, value: d.value, area: d.value * scale }));
+
+    const shortSide = Math.min(w, h);
+    const horizontal = w <= h; // lay the row across the shorter dimension
+
+    function worst(row, side) {
+      const sum = row.reduce((a, b) => a + b, 0);
+      const rmax = Math.max(...row), rmin = Math.min(...row);
+      return Math.max((side * side * rmax) / (sum * sum), (sum * sum) / (side * side * rmin));
+    }
+
+    let row = [];
+    let i = 0;
+    while (i < scaled.length) {
+      const candidate = [...row, scaled[i]];
+      const areas = candidate.map(d => d.area);
+      const prevAreas = row.map(d => d.area);
+      if (row.length === 0 || worst(areas, shortSide) <= worst(prevAreas, shortSide)) {
+        row = candidate;
+        i++;
+      } else {
+        break;
+      }
+    }
+
+    const rowSum = row.reduce((s, d) => s + d.area, 0);
+    let offset = 0;
+    let nextRect;
+
+    if (horizontal) {
+      const rowH = rowSum / w;
+      row.forEach(d => {
+        const tw = d.area / rowH;
+        out.push({ item: d.item, x: x + offset, y, w: tw, h: rowH });
+        offset += tw;
+      });
+      nextRect = { x, y: y + rowH, w, h: h - rowH };
+    } else {
+      const rowW = rowSum / h;
+      row.forEach(d => {
+        const th = d.area / rowW;
+        out.push({ item: d.item, x, y: y + offset, w: rowW, h: th });
+        offset += th;
+      });
+      nextRect = { x: x + rowW, y, w: w - rowW, h };
+    }
+
+    const remaining = scaled.slice(row.length).map(d => ({ item: d.item, value: d.value }));
+    squarify(remaining, nextRect.x, nextRect.y, nextRect.w, nextRect.h, out);
+  }
+
+  function renderHeatmap(coins) {
+    document.getElementById("heatmap-status").style.display = "none";
+    const container = document.getElementById("treemap");
+    container.innerHTML = "";
+    const rect = container.getBoundingClientRect();
+
+    const items = coins
+      .filter(c => c.market_cap && c.market_cap > 0)
+      .map(c => ({ item: c, value: c.market_cap }));
+
+    const placed = [];
+    squarify(items, 0, 0, rect.width, rect.height, placed);
+
+    placed.forEach(p => {
+      const coin = p.item;
       const change = coin.price_change_percentage_24h;
       const tile = document.createElement("div");
       tile.className = "tile";
+      tile.style.left = p.x + "px";
+      tile.style.top = p.y + "px";
+      tile.style.width = p.w + "px";
+      tile.style.height = p.h + "px";
       tile.style.background = colorFor(change);
 
-      const symbol = document.createElement("div");
-      symbol.className = "symbol";
-      symbol.textContent = (coin.symbol || "").toUpperCase();
+      const showLogo = p.w > 30 && p.h > 34;
+      const showText = p.w > 26 && p.h > 20;
 
-      const changeEl = document.createElement("div");
-      changeEl.className = "change";
-      changeEl.textContent = (change === null || change === undefined)
-        ? "—"
-        : (change >= 0 ? "+" : "") + change.toFixed(2) + "%";
+      if (showLogo && coin.image) {
+        const img = document.createElement("img");
+        img.src = coin.image;
+        tile.appendChild(img);
+      }
+      if (showText) {
+        const sym = document.createElement("div");
+        sym.className = "sym";
+        sym.textContent = coin.symbol.toUpperCase();
+        tile.appendChild(sym);
 
-      tile.appendChild(symbol);
-      tile.appendChild(changeEl);
-      gridEl.appendChild(tile);
+        const chg = document.createElement("div");
+        chg.className = "chg";
+        chg.textContent = (change === null || change === undefined) ? "—" :
+          (change >= 0 ? "+" : "") + change.toFixed(1) + "%";
+        tile.appendChild(chg);
+      }
+      container.appendChild(tile);
     });
   }
 
-  function showError(message) {
-    const statusEl = document.getElementById("status");
+  function loadHeatmap() {
+    const statusEl = document.getElementById("heatmap-status");
     statusEl.style.display = "block";
-    statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + message + "</span>";
-    const retry = document.createElement("button");
-    retry.className = "retry";
-    retry.textContent = "Retry";
-    retry.onclick = load;
-    statusEl.appendChild(retry);
+    statusEl.textContent = "Loading…";
+
+    fetch(HEATMAP_ENDPOINT)
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(renderHeatmap)
+      .catch(err => {
+        statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + err.message + "</span>";
+        const retry = document.createElement("button");
+        retry.className = "retry";
+        retry.textContent = "Retry";
+        retry.onclick = loadHeatmap;
+        statusEl.appendChild(retry);
+      });
   }
 
-  function load() {
-    document.getElementById("status").style.display = "block";
-    document.getElementById("status").textContent = "Loading…";
+  loadHeatmap();
+  window.addEventListener("resize", () => {
+    if (!paneHeatmap.classList.contains("active")) return;
+    loadHeatmap();
+  });
 
-    fetch(ENDPOINT)
-      .then(res => {
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        return res.json();
+  // ---------- Chart (candlesticks via TradingView's open-source Lightweight Charts) ----------
+  let chart, candleSeries;
+  const BINANCE_KLINES = (interval, limit) =>
+    `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=${limit}`;
+
+  function initChart() {
+    chartInitialized = true;
+    const el = document.getElementById("chart-container");
+    chart = LightweightCharts.createChart(el, {
+      width: el.clientWidth,
+      height: el.clientHeight,
+      layout: { background: { color: "#0e0e0e" }, textColor: "#ccc" },
+      grid: { vertLines: { color: "#1a1a1a" }, horzLines: { color: "#1a1a1a" } },
+      timeScale: { borderColor: "#333" },
+      rightPriceScale: { borderColor: "#333" },
+    });
+    candleSeries = chart.addCandlestickSeries({
+      upColor: "#26a69a", downColor: "#ef5350",
+      borderVisible: false,
+      wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+    });
+
+    document.querySelectorAll("#chart-controls button").forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll("#chart-controls button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        loadChart(btn.dataset.interval, btn.dataset.limit);
+      };
+    });
+
+    loadChart("4h", "90");
+  }
+
+  function loadChart(interval, limit) {
+    const statusEl = document.getElementById("chart-status");
+    statusEl.style.display = "block";
+    statusEl.textContent = "Loading…";
+
+    fetch(BINANCE_KLINES(interval, limit))
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(rows => {
+        statusEl.style.display = "none";
+        const data = rows.map(k => ({
+          time: Math.floor(k[0] / 1000),
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+        }));
+        candleSeries.setData(data);
+        chart.timeScale().fitContent();
       })
-      .then(render)
-      .catch(err => showError(err.message));
+      .catch(err => {
+        statusEl.innerHTML = "Couldn't load chart<br><span style='font-size:11px'>" + err.message + "</span>";
+      });
   }
 
-  load();
+  function resizeChart() {
+    if (!chart) return;
+    const el = document.getElementById("chart-container");
+    chart.resize(el.clientWidth, el.clientHeight);
+  }
+
+  window.addEventListener("resize", resizeChart);
 </script>
 
 </body>
