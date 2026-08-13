@@ -95,9 +95,11 @@
     padding: 0 16px;
   }
   .ticker-item img { width: 16px; height: 16px; border-radius: 50%; }
+  .ticker-item .t-main { display: flex; flex-direction: column; }
   .ticker-item .t-sym { font-size: 13px; font-weight: 700; color: #fff; }
-  .ticker-item .t-price { font-size: 12px; color: #ccc; }
-  .ticker-item .t-chg { font-size: 12px; font-weight: 600; }
+  .ticker-item .t-price { font-size: 11px; color: #ccc; }
+  .ticker-item .t-chg { font-size: 11px; font-weight: 600; }
+  .ticker-item .t-spark { width: 36px; height: 16px; flex-shrink: 0; }
   .t-up { color: #4fa64f; }
   .t-down { color: #d97a7a; }
   @keyframes scrollTicker {
@@ -164,9 +166,40 @@
   }
 
   /* ---- Market Overview ---- */
+  #overview-chart-container {
+    width: 100%;
+    height: 130px;
+    background: #0e0e0e;
+  }
+  .chart-mini-status {
+    text-align: center;
+    font-size: 9px;
+    color: #d97a7a;
+    padding: 2px 0;
+    min-height: 12px;
+  }
+  #overview-chart-controls {
+    display: flex;
+    gap: 4px;
+    padding: 4px 6px;
+    background: #161616;
+  }
+  #overview-chart-controls button {
+    flex: 1;
+    padding: 4px 0;
+    font-size: 10px;
+    background: #262626;
+    color: #ccc;
+    border: none;
+    border-radius: 4px;
+  }
+  #overview-chart-controls button.active {
+    background: #2962FF;
+    color: #fff;
+  }
   #overview-list {
     width: 100%;
-    height: 100%;
+    height: calc(100% - 176px);
     overflow-y: auto;
   }
   .ov-row {
@@ -176,6 +209,7 @@
     border-bottom: 1px solid #1e1e1e;
     gap: 8px;
   }
+  .ov-row.selected { background: rgba(41, 98, 255, 0.22); }
   .ov-row img { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; }
   .ov-name { flex: 1; min-width: 0; }
   .ov-name .ov-sym { font-size: 12px; font-weight: 700; color: #fff; }
@@ -218,6 +252,14 @@
   </div>
 
   <div id="pane-overview" class="pane">
+    <div id="overview-chart-container"></div>
+    <div id="overview-chart-status" class="chart-mini-status"></div>
+    <div id="overview-chart-controls">
+      <button data-days="1">1D</button>
+      <button data-days="7" class="active">7D</button>
+      <button data-days="30">1M</button>
+      <button data-days="365">1Y</button>
+    </div>
     <div id="overview-status" class="status">Loading…</div>
     <div id="overview-list"></div>
     <div id="overview-updated" class="last-updated"></div>
@@ -263,20 +305,80 @@
     if (active === "heatmap") {
       // The treemap needs real pixel dimensions to lay itself out — a hidden
       // pane measures 0x0, so recompute whenever this tab becomes visible.
+      // Uses the shared cache — no network call unless data was never fetched.
       loadHeatmap();
+    }
+    if (active === "overview") {
+      resizeOverviewChart();
+      loadOverviewList();
     }
   }
 
-  // ---------- Ticker Tape ----------
-  const TICKER_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=12&page=1&price_change_percentage=24h";
+  // ============================================================
+  // Shared CoinGecko market data — Ticker, Heatmap, and the Overview
+  // list all need overlapping data (price, 24h change, market cap,
+  // sparkline), so they share ONE cached, deduped fetch instead of
+  // each hitting CoinGecko independently. CoinGecko's free tier is
+  // aggressively rate-limited (confirmed: HTTP 429 with a
+  // `retry-after` header) — hitting it 3-4x per page load/tab-switch
+  // was the actual cause of "Couldn't load data" everywhere. This
+  // also backs off properly using that retry-after value instead of
+  // hammering it again immediately.
+  // ============================================================
+  const MARKET_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&price_change_percentage=24h&sparkline=true";
 
-  function loadTicker() {
-    fetch(TICKER_ENDPOINT)
-      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  let marketData = null;
+  let marketFetchPromise = null;
+  let marketRetryAfterMs = 0;
+
+  function getMarketData(force) {
+    if (!force && marketData) return Promise.resolve(marketData);
+    if (marketFetchPromise) return marketFetchPromise; // dedupe concurrent callers
+
+    const waitMs = marketRetryAfterMs - Date.now();
+    if (waitMs > 0) {
+      return Promise.reject(new Error("Rate limited — retry in " + Math.ceil(waitMs / 1000) + "s"));
+    }
+
+    marketFetchPromise = fetch(MARKET_ENDPOINT)
+      .then(r => {
+        if (r.status === 429) {
+          const retryAfter = parseInt(r.headers.get("retry-after") || "30", 10);
+          marketRetryAfterMs = Date.now() + retryAfter * 1000;
+          throw new Error("Rate limited by CoinGecko — retry in " + retryAfter + "s");
+        }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(data => {
+        marketData = data;
+        marketFetchPromise = null;
+        return data;
+      })
+      .catch(err => {
+        marketFetchPromise = null;
+        throw err;
+      });
+    return marketFetchPromise;
+  }
+
+  // Single shared refresh loop (replaces 3 separate per-tab timers) — only
+  // refetches while a CoinGecko-backed tab is actually visible, and only
+  // re-renders that one tab.
+  setInterval(() => {
+    const active = TABS.find(t => paneEls[t].classList.contains("active"));
+    if (active === "ticker") loadTicker(true);
+    else if (active === "heatmap") loadHeatmap(true);
+    else if (active === "overview") loadOverviewList(true);
+  }, 45000);
+
+  // ---------- Ticker Tape ----------
+  function loadTicker(force) {
+    getMarketData(force)
       .then(coins => {
         document.getElementById("ticker-status").style.display = "none";
         const track = document.getElementById("ticker-track");
-        const html = coins.map(c => tickerItemHTML(c)).join("");
+        const html = coins.slice(0, 12).map(c => tickerItemHTML(c)).join("");
         // duplicate content so the marquee loop is seamless
         track.innerHTML = html + html;
         document.getElementById("ticker-updated").textContent =
@@ -291,25 +393,27 @@
 
   function tickerItemHTML(c) {
     const chg = c.price_change_percentage_24h;
-    const chgClass = chg >= 0 ? "t-up" : "t-down";
-    const chgText = (chg === null || chg === undefined) ? "—" : (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+    const up = chg >= 0;
+    const chgClass = up ? "t-up" : "t-down";
+    const chgText = (chg === null || chg === undefined) ? "—" : (up ? "+" : "") + chg.toFixed(2) + "%";
     const price = c.current_price >= 1 ? c.current_price.toFixed(2) : c.current_price.toPrecision(3);
+    const spark = c.sparkline_in_7d
+      ? sparklineSVG(c.sparkline_in_7d.price, up, 36, 16).replace('class="ov-spark"', 'class="t-spark"')
+      : "";
     return `<span class="ticker-item">
       <img src="${c.image}">
-      <span class="t-sym">${c.symbol.toUpperCase()}</span>
-      <span class="t-price">$${price}</span>
+      <span class="t-main">
+        <span class="t-sym">${c.symbol.toUpperCase()}</span>
+        <span class="t-price">$${price}</span>
+      </span>
+      ${spark}
       <span class="t-chg ${chgClass}">${chgText}</span>
     </span>`;
   }
 
   loadTicker();
-  setInterval(() => {
-    if (paneEls.ticker.classList.contains("active")) loadTicker();
-  }, 30000);
 
   // ---------- Heatmap (squarified treemap, sized by market cap) ----------
-  const HEATMAP_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=16&page=1&price_change_percentage=24h";
-
   function colorFor(change) {
     if (change === null || change === undefined) return "#595959";
     if (change < -8)  return "#7f1414";
@@ -431,31 +535,27 @@
       "Updated " + new Date().toLocaleTimeString();
   }
 
-  function loadHeatmap() {
+  function loadHeatmap(force) {
     const statusEl = document.getElementById("heatmap-status");
     statusEl.style.display = "block";
     statusEl.textContent = "Loading…";
 
-    fetch(HEATMAP_ENDPOINT)
-      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    getMarketData(force)
       .then(renderHeatmap)
       .catch(err => {
+        statusEl.style.display = "block";
         statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + err.message + "</span>";
         const retry = document.createElement("button");
         retry.className = "retry";
         retry.textContent = "Retry";
-        retry.onclick = loadHeatmap;
+        retry.onclick = () => loadHeatmap(true);
         statusEl.appendChild(retry);
       });
   }
 
-  loadHeatmap();
   window.addEventListener("resize", () => {
     if (paneEls.heatmap.classList.contains("active")) loadHeatmap();
   });
-  setInterval(() => {
-    if (paneEls.heatmap.classList.contains("active")) loadHeatmap();
-  }, 30000);
 
   // ---------- Chart (candlesticks via TradingView's open-source Lightweight Charts) ----------
   let chart, candleSeries;
@@ -525,21 +625,33 @@
     chart.resize(el.clientWidth, el.clientHeight);
   }
 
-  window.addEventListener("resize", resizeChart);
+  window.addEventListener("resize", () => {
+    resizeChart();
+    resizeOverviewChart();
+  });
   setInterval(() => {
     if (chartInitialized && paneEls.chart.classList.contains("active")) {
       loadChart(currentInterval, currentLimit);
     }
   }, 30000);
 
-  // ---------- Market Overview (crypto slice — top movers, list + sparkline) ----------
-  const OVERVIEW_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=12&page=1&price_change_percentage=24h&sparkline=true";
+  // ---------- Market Overview (crypto slice) ----------
+  // Modeled on TradingView's real Market Overview: a big featured chart for
+  // the selected symbol on top, a selectable list below. Tapping a row swaps
+  // the featured chart to that coin, same as the reference widget.
+  const COIN_CHART_ENDPOINT = (id, days) =>
+    `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}`;
 
-  function sparklineSVG(prices, up) {
+  let overviewCoins = [];
+  let selectedCoinId = "bitcoin";
+  let selectedDays = "7";
+  let overviewChart, overviewSeries;
+
+  function sparklineSVG(prices, up, w, h) {
     if (!prices || prices.length < 2) return "";
+    w = w || 46; h = h || 20;
     const min = Math.min(...prices), max = Math.max(...prices);
     const range = (max - min) || 1;
-    const w = 46, h = 20;
     const step = w / (prices.length - 1);
     const points = prices.map((p, i) => {
       const x = (i * step).toFixed(1);
@@ -550,15 +662,79 @@
     return `<svg class="ov-spark" viewBox="0 0 ${w} ${h}"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
   }
 
-  function renderOverview(coins) {
-    document.getElementById("overview-status").style.display = "none";
+  function initOverviewChart() {
+    const el = document.getElementById("overview-chart-container");
+    overviewChart = LightweightCharts.createChart(el, {
+      width: el.clientWidth,
+      height: el.clientHeight,
+      layout: { background: { color: "#0e0e0e" }, textColor: "#ccc" },
+      grid: { vertLines: { color: "#1a1a1a" }, horzLines: { color: "#1a1a1a" } },
+      timeScale: { borderColor: "#333" },
+      rightPriceScale: { borderColor: "#333" },
+      handleScroll: false,
+      handleScale: false,
+    });
+    overviewSeries = overviewChart.addAreaSeries({
+      lineColor: "#2962FF",
+      topColor: "rgba(41, 98, 255, 0.35)",
+      bottomColor: "rgba(41, 98, 255, 0.0)",
+      lineWidth: 2,
+    });
+
+    document.querySelectorAll("#overview-chart-controls button").forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll("#overview-chart-controls button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        selectedDays = btn.dataset.days;
+        loadOverviewChart();
+      };
+    });
+  }
+
+  function loadOverviewChart() {
+    fetch(COIN_CHART_ENDPOINT(selectedCoinId, selectedDays))
+      .then(r => {
+        if (r.status === 429) {
+          const retryAfter = r.headers.get("retry-after") || "a bit";
+          throw new Error("Rate limited — retry in " + retryAfter + "s");
+        }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(json => {
+        const data = json.prices.map(p => ({ time: Math.floor(p[0] / 1000), value: p[1] }));
+        overviewSeries.setData(data);
+        overviewChart.timeScale().fitContent();
+        document.getElementById("overview-chart-status").textContent = "";
+      })
+      .catch(err => {
+        // The list still works even if this featured chart fails — surface
+        // the reason instead of failing silently, so it's diagnosable.
+        document.getElementById("overview-chart-status").textContent = err.message;
+      });
+  }
+
+  function resizeOverviewChart() {
+    if (!overviewChart) return;
+    const el = document.getElementById("overview-chart-container");
+    overviewChart.resize(el.clientWidth, el.clientHeight);
+  }
+
+  function selectCoin(id) {
+    selectedCoinId = id;
+    renderOverviewList();
+    loadOverviewChart();
+  }
+
+  function renderOverviewList() {
     const list = document.getElementById("overview-list");
-    list.innerHTML = coins.map(c => {
+    list.innerHTML = overviewCoins.map(c => {
       const chg = c.price_change_percentage_24h;
       const up = chg >= 0;
       const chgText = (chg === null || chg === undefined) ? "—" : (up ? "+" : "") + chg.toFixed(2) + "%";
       const spark = c.sparkline_in_7d ? sparklineSVG(c.sparkline_in_7d.price, up) : "";
-      return `<div class="ov-row">
+      const selected = c.id === selectedCoinId ? " selected" : "";
+      return `<div class="ov-row${selected}" data-id="${c.id}">
         <img src="${c.image}">
         <div class="ov-name">
           <div class="ov-sym">${c.symbol.toUpperCase()}</div>
@@ -568,32 +744,41 @@
         <div class="ov-chg" style="color:${up ? '#4fa64f' : '#d97a7a'}">${chgText}</div>
       </div>`;
     }).join("");
-    document.getElementById("overview-updated").textContent =
-      "Updated " + new Date().toLocaleTimeString();
+    list.querySelectorAll(".ov-row").forEach(row => {
+      row.onclick = () => selectCoin(row.dataset.id);
+    });
   }
 
-  function loadOverview() {
+  let overviewChartLoadedOnce = false;
+
+  function loadOverviewList(force) {
     const statusEl = document.getElementById("overview-status");
     statusEl.style.display = "block";
     statusEl.textContent = "Loading…";
 
-    fetch(OVERVIEW_ENDPOINT)
-      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(renderOverview)
+    getMarketData(force)
+      .then(coins => {
+        statusEl.style.display = "none";
+        overviewCoins = coins.slice(0, 12);
+        if (!overviewChart) initOverviewChart();
+        renderOverviewList();
+        if (!overviewChartLoadedOnce) {
+          overviewChartLoadedOnce = true;
+          loadOverviewChart();
+        }
+        document.getElementById("overview-updated").textContent =
+          "Updated " + new Date().toLocaleTimeString();
+      })
       .catch(err => {
+        statusEl.style.display = "block";
         statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + err.message + "</span>";
         const retry = document.createElement("button");
         retry.className = "retry";
         retry.textContent = "Retry";
-        retry.onclick = loadOverview;
+        retry.onclick = () => loadOverviewList(true);
         statusEl.appendChild(retry);
       });
   }
-
-  loadOverview();
-  setInterval(() => {
-    if (paneEls.overview.classList.contains("active")) loadOverview();
-  }, 30000);
 </script>
 
 </body>
