@@ -1,32 +1,141 @@
-<!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container" style="height:100%;width:100%">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TradingView Bridge Test</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #0e0e0e; color: #ccc;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  #debug {
+    padding: 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    border-bottom: 1px solid #333;
+  }
+  #debug .ok { color: #4fa64f; }
+  #debug .waiting { color: #d9a63e; }
+</style>
+</head>
+<body>
+
+<div id="debug" class="waiting">Watching for a TradingView iframe attempt…</div>
+
+<script>
+  // ============================================================
+  // EXPERIMENTAL — two-hop bridge, phase 1 (JS side only).
+  //
+  // TradingView's widget script tries to create an iframe pointing at
+  // tradingview-widget.com — that's the part ASWebAuthenticationSession
+  // blocks. This intercepts that attempt, captures the real target URL,
+  // and (instead of navigating an iframe) redirects the TOP-LEVEL page
+  // to a custom URL scheme carrying that URL. On watchOS, the native
+  // side catches that redirect via ASWebAuthenticationSession's
+  // callbackURLScheme and opens a SECOND session pointed directly at
+  // the real TradingView URL — as its own top-level page, not nested.
+  //
+  // This file only proves/debugs the interception half — it logs what
+  // it catches instead of actually redirecting, so it's testable here
+  // in a normal desktop browser without needing a device round-trip.
+  // Flip DEBUG_ONLY to false to make it actually redirect (device only —
+  // "explorex://" doesn't do anything in a desktop browser).
+  // ============================================================
+  const DEBUG_ONLY = true;
+  const CALLBACK_SCHEME = "explorex";
+
+  const debugEl = document.getElementById("debug");
+  let caught = false;
+
+  function isWidgetUrl(value) {
+    return typeof value === "string" && value.indexOf("tradingview-widget.com") !== -1;
+  }
+
+  function handleCaught(source, url) {
+    if (caught) return; // only act on the first one
+    caught = true;
+
+    debugEl.className = "ok";
+    debugEl.textContent = "Caught via " + source + ":\n" + url;
+
+    if (!DEBUG_ONLY) {
+      const target = CALLBACK_SCHEME + "://widget-target?url=" + encodeURIComponent(url);
+      window.top.location.href = target;
+    }
+  }
+
+  // Catches iframe.setAttribute("src", ...) — how TradingView's classic
+  // embed-widget-*.js loader assigns the iframe destination (confirmed
+  // from their actual source).
+  const origSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {
+    if (this.tagName === "IFRAME" && String(name).toLowerCase() === "src" && isWidgetUrl(value)) {
+      handleCaught("setAttribute", value);
+    }
+    return origSetAttribute.call(this, name, value);
+  };
+
+  // Catches iframe.src = "..." property assignment, in case a widget
+  // sets it this way instead (e.g. possibly the newer Web Component API).
+  const iframeSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "src");
+  if (iframeSrcDescriptor && iframeSrcDescriptor.set) {
+    Object.defineProperty(HTMLIFrameElement.prototype, "src", {
+      get: iframeSrcDescriptor.get,
+      set: function (value) {
+        if (isWidgetUrl(value)) handleCaught("property setter", value);
+        return iframeSrcDescriptor.set.call(this, value);
+      },
+      configurable: true,
+    });
+  }
+
+  // Catches an iframe appearing in the DOM by any other means (innerHTML,
+  // cloning, etc.) — won't help if the widget hides it in a CLOSED shadow
+  // root, which is the one case none of this can see into at all.
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((m) => {
+      m.addedNodes.forEach((node) => {
+        if (node.tagName === "IFRAME" && isWidgetUrl(node.src)) {
+          handleCaught("MutationObserver", node.src);
+        }
+      });
+    });
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  setTimeout(() => {
+    if (!caught) {
+      debugEl.textContent =
+        "Nothing caught after 6s. Likely means this widget hides its iframe in a " +
+        "closed shadow root, which no page-level JS can see into.";
+    }
+  }, 6000);
+</script>
+
+<!-- Test A: classic embed-widget-*.js loader (confirmed uses plain setAttribute) -->
+<div class="tradingview-widget-container" style="height:200px;width:100%">
   <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%"></div>
-  <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/NASDAQ-AAPL/" rel="noopener nofollow" target="_blank"><span class="blue-text">AAPL stock chart</span></a><span class="trademark"> by TradingView</span></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-crypto-coins-heatmap.js" async>
   {
-  "allow_symbol_change": true,
-  "calendar": false,
-  "details": false,
-  "hide_side_toolbar": true,
-  "hide_top_toolbar": false,
-  "hide_legend": false,
-  "hide_volume": false,
-  "hotlist": false,
-  "interval": "D",
-  "locale": "en",
-  "save_image": true,
-  "style": "1",
-  "symbol": "NASDAQ:AAPL",
-  "theme": "light",
-  "timezone": "Etc/UTC",
-  "backgroundColor": "#ffffff",
-  "gridColor": "rgba(46, 46, 46, 0.2)",
-  "watchlist": [],
-  "withdateranges": false,
-  "compareSymbols": [],
-  "studies": [],
-  "autosize": true
-}
+    "dataSource": "Crypto",
+    "blockSize": "market_cap_calc",
+    "blockColor": "24h_close_change|5",
+    "locale": "en",
+    "colorTheme": "dark",
+    "hasTopBar": false,
+    "isZoomEnabled": true,
+    "width": "100%",
+    "height": "100%"
+  }
   </script>
 </div>
-<!-- TradingView Widget END -->
+
+<!-- Test B: newer Web Component API -->
+<script type="module" src="https://widgets.tradingview-widget.com/w/en/tv-ticker-tape.js"></script>
+<tv-ticker-tape symbols="BITSTAMP:BTCUSD,BITSTAMP:ETHUSD,FX:EURUSD"></tv-ticker-tape>
+
+</body>
+</html>
