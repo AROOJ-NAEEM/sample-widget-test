@@ -21,11 +21,11 @@
   }
   #tabs button {
     flex: 1;
-    padding: 10px 4px;
+    padding: 8px 2px;
     background: none;
     border: none;
     color: #999;
-    font-size: 13px;
+    font-size: 10.5px;
     font-weight: 600;
     border-bottom: 2px solid transparent;
   }
@@ -35,7 +35,7 @@
   }
   #panes {
     position: relative;
-    height: calc(100% - 38px);
+    height: calc(100% - 32px);
     width: 100%;
   }
   .pane {
@@ -45,13 +45,67 @@
   }
   .pane.active { display: block; }
 
-  /* ---- Heatmap ---- */
-  #heatmap-status {
+  /* ---- shared ---- */
+  .status {
     color: #999;
     text-align: center;
     padding: 16px;
     font-size: 13px;
   }
+  .retry {
+    display: block;
+    margin: 12px auto 0;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #2962FF;
+    color: white;
+    font-size: 13px;
+  }
+  .last-updated {
+    position: absolute;
+    bottom: 2px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 9px;
+    color: #666;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* ---- Ticker Tape ---- */
+  #ticker-viewport {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    background: #161616;
+  }
+  #ticker-track {
+    display: flex;
+    white-space: nowrap;
+    animation: scrollTicker 22s linear infinite;
+  }
+  .ticker-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+  }
+  .ticker-item img { width: 16px; height: 16px; border-radius: 50%; }
+  .ticker-item .t-sym { font-size: 13px; font-weight: 700; color: #fff; }
+  .ticker-item .t-price { font-size: 12px; color: #ccc; }
+  .ticker-item .t-chg { font-size: 12px; font-weight: 600; }
+  .t-up { color: #4fa64f; }
+  .t-down { color: #d97a7a; }
+  @keyframes scrollTicker {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+
+  /* ---- Heatmap ---- */
   #treemap {
     position: relative;
     width: 100%;
@@ -107,33 +161,49 @@
     left: 0;
     right: 0;
     transform: translateY(-50%);
-    text-align: center;
-    color: #999;
-    font-size: 13px;
   }
-  .retry {
-    display: block;
-    margin: 12px auto 0;
-    padding: 6px 14px;
-    border-radius: 6px;
-    border: none;
-    background: #2962FF;
-    color: white;
-    font-size: 13px;
+
+  /* ---- Market Overview ---- */
+  #overview-list {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
   }
+  .ov-row {
+    display: flex;
+    align-items: center;
+    padding: 7px 8px;
+    border-bottom: 1px solid #1e1e1e;
+    gap: 8px;
+  }
+  .ov-row img { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; }
+  .ov-name { flex: 1; min-width: 0; }
+  .ov-name .ov-sym { font-size: 12px; font-weight: 700; color: #fff; }
+  .ov-name .ov-price { font-size: 10px; color: #999; }
+  .ov-spark { width: 46px; height: 20px; flex-shrink: 0; }
+  .ov-chg { width: 52px; text-align: right; font-size: 11px; font-weight: 600; flex-shrink: 0; }
 </style>
 </head>
 <body>
 
 <div id="tabs">
-  <button id="tab-heatmap" class="active">Heatmap</button>
+  <button id="tab-ticker" class="active">Ticker</button>
+  <button id="tab-heatmap">Heatmap</button>
   <button id="tab-chart">Chart</button>
+  <button id="tab-overview">Overview</button>
 </div>
 
 <div id="panes">
-  <div id="pane-heatmap" class="pane active">
-    <div id="heatmap-status">Loading…</div>
+  <div id="pane-ticker" class="pane active">
+    <div id="ticker-status" class="status">Loading…</div>
+    <div id="ticker-viewport"><div id="ticker-track"></div></div>
+    <div id="ticker-updated" class="last-updated"></div>
+  </div>
+
+  <div id="pane-heatmap" class="pane">
+    <div id="heatmap-status" class="status">Loading…</div>
     <div id="treemap"></div>
+    <div id="heatmap-updated" class="last-updated"></div>
   </div>
 
   <div id="pane-chart" class="pane">
@@ -143,7 +213,14 @@
       <button data-interval="1d" data-limit="120">1D</button>
     </div>
     <div id="chart-container"></div>
-    <div id="chart-status">Loading…</div>
+    <div id="chart-status" class="status">Loading…</div>
+    <div id="chart-updated" class="last-updated"></div>
+  </div>
+
+  <div id="pane-overview" class="pane">
+    <div id="overview-status" class="status">Loading…</div>
+    <div id="overview-list"></div>
+    <div id="overview-updated" class="last-updated"></div>
   </div>
 </div>
 
@@ -154,30 +231,81 @@
   // iframe anywhere. ASWebAuthenticationSession blocks cross-origin
   // iframe navigation (confirmed via Web Inspector) — everything
   // here is a plain same-frame fetch()/script tag, which is allowed.
+  //
+  // Covers 4 of the 6 widgets from the recommendation doc that are
+  // achievable free / without an API key (crypto data only):
+  //   1. Ticker Tape   2. Crypto Coins Heatmap
+  //   3. Advanced Chart (candles)   4. Market Overview (crypto slice)
+  // Stock Heatmap and Top Stories are NOT included — no free,
+  // no-key data source exists for stock market-cap data or news;
+  // both need a vendor/API-key decision first.
   // ============================================================
 
-  // ---------- Tabs ----------
-  const tabHeatmap = document.getElementById("tab-heatmap");
-  const tabChart = document.getElementById("tab-chart");
-  const paneHeatmap = document.getElementById("pane-heatmap");
-  const paneChart = document.getElementById("pane-chart");
+  const TABS = ["ticker", "heatmap", "chart", "overview"];
+  const tabEls = {}, paneEls = {};
+  TABS.forEach(name => {
+    tabEls[name] = document.getElementById("tab-" + name);
+    paneEls[name] = document.getElementById("pane-" + name);
+    tabEls[name].onclick = () => switchTab(name);
+  });
+
   let chartInitialized = false;
 
-  tabHeatmap.onclick = () => switchTab("heatmap");
-  tabChart.onclick = () => switchTab("chart");
-
-  function switchTab(name) {
-    const heat = name === "heatmap";
-    tabHeatmap.classList.toggle("active", heat);
-    tabChart.classList.toggle("active", !heat);
-    paneHeatmap.classList.toggle("active", heat);
-    paneChart.classList.toggle("active", !heat);
-    if (!heat && !chartInitialized) {
-      initChart();
-    } else if (!heat) {
-      resizeChart();
+  function switchTab(active) {
+    TABS.forEach(name => {
+      const on = name === active;
+      tabEls[name].classList.toggle("active", on);
+      paneEls[name].classList.toggle("active", on);
+    });
+    if (active === "chart") {
+      if (!chartInitialized) initChart(); else resizeChart();
+    }
+    if (active === "heatmap") {
+      // The treemap needs real pixel dimensions to lay itself out — a hidden
+      // pane measures 0x0, so recompute whenever this tab becomes visible.
+      loadHeatmap();
     }
   }
+
+  // ---------- Ticker Tape ----------
+  const TICKER_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=12&page=1&price_change_percentage=24h";
+
+  function loadTicker() {
+    fetch(TICKER_ENDPOINT)
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(coins => {
+        document.getElementById("ticker-status").style.display = "none";
+        const track = document.getElementById("ticker-track");
+        const html = coins.map(c => tickerItemHTML(c)).join("");
+        // duplicate content so the marquee loop is seamless
+        track.innerHTML = html + html;
+        document.getElementById("ticker-updated").textContent =
+          "Updated " + new Date().toLocaleTimeString();
+      })
+      .catch(err => {
+        const statusEl = document.getElementById("ticker-status");
+        statusEl.style.display = "block";
+        statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + err.message + "</span>";
+      });
+  }
+
+  function tickerItemHTML(c) {
+    const chg = c.price_change_percentage_24h;
+    const chgClass = chg >= 0 ? "t-up" : "t-down";
+    const chgText = (chg === null || chg === undefined) ? "—" : (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+    const price = c.current_price >= 1 ? c.current_price.toFixed(2) : c.current_price.toPrecision(3);
+    return `<span class="ticker-item">
+      <img src="${c.image}">
+      <span class="t-sym">${c.symbol.toUpperCase()}</span>
+      <span class="t-price">$${price}</span>
+      <span class="t-chg ${chgClass}">${chgText}</span>
+    </span>`;
+  }
+
+  loadTicker();
+  setInterval(() => {
+    if (paneEls.ticker.classList.contains("active")) loadTicker();
+  }, 30000);
 
   // ---------- Heatmap (squarified treemap, sized by market cap) ----------
   const HEATMAP_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=16&page=1&price_change_percentage=24h";
@@ -193,7 +321,6 @@
     return "#0d4d0d";
   }
 
-  // Classic squarified treemap.
   function squarify(items, x, y, w, h, out) {
     if (items.length === 0) return;
     if (items.length === 1) {
@@ -205,7 +332,7 @@
     const scaled = items.map(d => ({ item: d.item, value: d.value, area: d.value * scale }));
 
     const shortSide = Math.min(w, h);
-    const horizontal = w <= h; // lay the row across the shorter dimension
+    const horizontal = w <= h;
 
     function worst(row, side) {
       const sum = row.reduce((a, b) => a + b, 0);
@@ -299,6 +426,9 @@
       }
       container.appendChild(tile);
     });
+
+    document.getElementById("heatmap-updated").textContent =
+      "Updated " + new Date().toLocaleTimeString();
   }
 
   function loadHeatmap() {
@@ -321,12 +451,15 @@
 
   loadHeatmap();
   window.addEventListener("resize", () => {
-    if (!paneHeatmap.classList.contains("active")) return;
-    loadHeatmap();
+    if (paneEls.heatmap.classList.contains("active")) loadHeatmap();
   });
+  setInterval(() => {
+    if (paneEls.heatmap.classList.contains("active")) loadHeatmap();
+  }, 30000);
 
   // ---------- Chart (candlesticks via TradingView's open-source Lightweight Charts) ----------
   let chart, candleSeries;
+  let currentInterval = "4h", currentLimit = "90";
   const BINANCE_KLINES = (interval, limit) =>
     `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=${limit}`;
 
@@ -355,10 +488,12 @@
       };
     });
 
-    loadChart("4h", "90");
+    loadChart(currentInterval, currentLimit);
   }
 
   function loadChart(interval, limit) {
+    currentInterval = interval;
+    currentLimit = limit;
     const statusEl = document.getElementById("chart-status");
     statusEl.style.display = "block";
     statusEl.textContent = "Loading…";
@@ -376,6 +511,8 @@
         }));
         candleSeries.setData(data);
         chart.timeScale().fitContent();
+        document.getElementById("chart-updated").textContent =
+          "Updated " + new Date().toLocaleTimeString() + " · latest candle close: " + data[data.length - 1].close;
       })
       .catch(err => {
         statusEl.innerHTML = "Couldn't load chart<br><span style='font-size:11px'>" + err.message + "</span>";
@@ -389,6 +526,74 @@
   }
 
   window.addEventListener("resize", resizeChart);
+  setInterval(() => {
+    if (chartInitialized && paneEls.chart.classList.contains("active")) {
+      loadChart(currentInterval, currentLimit);
+    }
+  }, 30000);
+
+  // ---------- Market Overview (crypto slice — top movers, list + sparkline) ----------
+  const OVERVIEW_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=12&page=1&price_change_percentage=24h&sparkline=true";
+
+  function sparklineSVG(prices, up) {
+    if (!prices || prices.length < 2) return "";
+    const min = Math.min(...prices), max = Math.max(...prices);
+    const range = (max - min) || 1;
+    const w = 46, h = 20;
+    const step = w / (prices.length - 1);
+    const points = prices.map((p, i) => {
+      const x = (i * step).toFixed(1);
+      const y = (h - ((p - min) / range) * h).toFixed(1);
+      return `${x},${y}`;
+    }).join(" ");
+    const color = up ? "#4fa64f" : "#d97a7a";
+    return `<svg class="ov-spark" viewBox="0 0 ${w} ${h}"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+  }
+
+  function renderOverview(coins) {
+    document.getElementById("overview-status").style.display = "none";
+    const list = document.getElementById("overview-list");
+    list.innerHTML = coins.map(c => {
+      const chg = c.price_change_percentage_24h;
+      const up = chg >= 0;
+      const chgText = (chg === null || chg === undefined) ? "—" : (up ? "+" : "") + chg.toFixed(2) + "%";
+      const spark = c.sparkline_in_7d ? sparklineSVG(c.sparkline_in_7d.price, up) : "";
+      return `<div class="ov-row">
+        <img src="${c.image}">
+        <div class="ov-name">
+          <div class="ov-sym">${c.symbol.toUpperCase()}</div>
+          <div class="ov-price">$${c.current_price}</div>
+        </div>
+        ${spark}
+        <div class="ov-chg" style="color:${up ? '#4fa64f' : '#d97a7a'}">${chgText}</div>
+      </div>`;
+    }).join("");
+    document.getElementById("overview-updated").textContent =
+      "Updated " + new Date().toLocaleTimeString();
+  }
+
+  function loadOverview() {
+    const statusEl = document.getElementById("overview-status");
+    statusEl.style.display = "block";
+    statusEl.textContent = "Loading…";
+
+    fetch(OVERVIEW_ENDPOINT)
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(renderOverview)
+      .catch(err => {
+        statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + err.message + "</span>";
+        const retry = document.createElement("button");
+        retry.className = "retry";
+        retry.textContent = "Retry";
+        retry.onclick = loadOverview;
+        statusEl.appendChild(retry);
+      });
+  }
+
+  loadOverview();
+  setInterval(() => {
+    if (paneEls.overview.classList.contains("active")) loadOverview();
+  }, 30000);
 </script>
 
 </body>
