@@ -10,52 +10,132 @@
     padding: 0;
     height: 100%;
     width: 100%;
-    background: #ffffff;
+    background: #000000;
+    font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, sans-serif;
   }
-  .tradingview-widget-container {
-    height: 100%;
-    width: 100%;
+  #status {
+    color: #999;
+    text-align: center;
+    padding: 16px;
+    font-size: 13px;
   }
-  .tradingview-widget-container__widget {
-    height: calc(100% - 32px);
-    width: 100%;
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+    padding: 4px;
+  }
+  .tile {
+    border-radius: 6px;
+    padding: 8px 4px;
+    min-height: 44px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+  }
+  .symbol {
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .change {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.9;
+  }
+  .retry {
+    display: block;
+    margin: 12px auto;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: none;
+    background: #2962FF;
+    color: white;
+    font-size: 13px;
   }
 </style>
 </head>
 <body>
 
-<!-- TradingView Widget BEGIN -->
-<div class="tradingview-widget-container" style="height:100%;width:100%">
-  <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%"></div>
-  <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/NASDAQ-AAPL/" rel="noopener nofollow" target="_blank"><span class="blue-text">AAPL stock chart</span></a><span class="trademark"> by TradingView</span></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
-  {
-  "allow_symbol_change": true,
-  "calendar": false,
-  "details": false,
-  "hide_side_toolbar": true,
-  "hide_top_toolbar": false,
-  "hide_legend": false,
-  "hide_volume": false,
-  "hotlist": false,
-  "interval": "D",
-  "locale": "en",
-  "save_image": true,
-  "style": "1",
-  "symbol": "NASDAQ:AAPL",
-  "theme": "light",
-  "timezone": "Etc/UTC",
-  "backgroundColor": "#ffffff",
-  "gridColor": "rgba(46, 46, 46, 0.2)",
-  "watchlist": [],
-  "withdateranges": false,
-  "compareSymbols": [],
-  "studies": [],
-  "autosize": true
-}
-  </script>
-</div>
-<!-- TradingView Widget END -->
+<div id="status">Loading…</div>
+<div id="grid"></div>
+
+<script>
+  // Renders a live crypto heatmap directly on this page, using CoinGecko's free
+  // public API — no TradingView embed script, no iframe. TradingView's widget
+  // requires navigating a cross-origin iframe (s3.tradingview.com -> tradingview-widget.com),
+  // which ASWebAuthenticationSession blocks by design (confirmed via Web Inspector:
+  // the iframe navigation resolves to about:blank). This avoids that entirely by
+  // doing a same-frame fetch() and rendering with plain HTML/CSS.
+
+  const ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&price_change_percentage=24h";
+
+  function colorFor(change) {
+    if (change === null || change === undefined) return "rgba(150,150,150,0.35)";
+    if (change < -8)  return "#8c1414";
+    if (change < -3)  return "#d94040";
+    if (change < 0)   return "#e68c8c";
+    if (change < 3)   return "#595959";
+    if (change < 8)   return "#73bf73";
+    if (change < 13)  return "#338c33";
+    return "#0d590d";
+  }
+
+  function render(coins) {
+    const statusEl = document.getElementById("status");
+    const gridEl = document.getElementById("grid");
+    statusEl.style.display = "none";
+    gridEl.innerHTML = "";
+
+    coins.forEach(coin => {
+      const change = coin.price_change_percentage_24h;
+      const tile = document.createElement("div");
+      tile.className = "tile";
+      tile.style.background = colorFor(change);
+
+      const symbol = document.createElement("div");
+      symbol.className = "symbol";
+      symbol.textContent = (coin.symbol || "").toUpperCase();
+
+      const changeEl = document.createElement("div");
+      changeEl.className = "change";
+      changeEl.textContent = (change === null || change === undefined)
+        ? "—"
+        : (change >= 0 ? "+" : "") + change.toFixed(2) + "%";
+
+      tile.appendChild(symbol);
+      tile.appendChild(changeEl);
+      gridEl.appendChild(tile);
+    });
+  }
+
+  function showError(message) {
+    const statusEl = document.getElementById("status");
+    statusEl.style.display = "block";
+    statusEl.innerHTML = "Couldn't load data<br><span style='font-size:11px'>" + message + "</span>";
+    const retry = document.createElement("button");
+    retry.className = "retry";
+    retry.textContent = "Retry";
+    retry.onclick = load;
+    statusEl.appendChild(retry);
+  }
+
+  function load() {
+    document.getElementById("status").style.display = "block";
+    document.getElementById("status").textContent = "Loading…";
+
+    fetch(ENDPOINT)
+      .then(res => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(render)
+      .catch(err => showError(err.message));
+  }
+
+  load();
+</script>
 
 </body>
 </html>
